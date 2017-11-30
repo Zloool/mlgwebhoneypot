@@ -4,40 +4,46 @@ import sys
 import time
 from shutil import copyfile
 from multiprocessing import Process, Event
-
-if not os.path.isfile(sys.path[0] + "/common/settings.py"):
-        copyfile(sys.path[0] + "/common/settings.py.example",
-                 sys.path[0] + "/common/settings.py")
-from client import client
-from server import server
-from common.update import trigger, pull
-from common.arguments import parse
+from threading import Thread, Event as TEvent
+if not os.path.isfile(os.path.join(sys.path[0], "manyfaced", "common", "settings.py")):
+        copyfile(os.path.join(sys.path[0], "manyfaced", "common", "settings.py.example"),
+                 os.path.join(sys.path[0], "manyfaced", "common", "settings.py"))
+from manyfaced.client import client
+from manyfaced.server import server
+from manyfaced.common.update import trigger, pull
+from manyfaced.common.arguments import parse
 
 
 def main():
-    update_event = Event()
+    if args.debug is not None:
+        run_style = Thread
+        update_event = TEvent()
+    else:
+        run_style = Process
+        update_event = Event()
     if args.client is not None:
-        client_proc = Process(
+        client_proc = run_style(
             args=(args, update_event,),
             name="client",
             target=client.main,
         )
         client_proc.start()
     if args.server is not None:
-        server_proc = Process(
+        server_proc = run_style(
             args=(args, update_event,),
             name="server",
             target=server.main,
         )
         server_proc.start()
-    if args.updater:
-        trigger_proc = Process(
-            args=(update_event,),
-            name="trigger",
-            target=trigger,
-        )
-        trigger_proc.start()
-        trigger_proc.join()
+    # Need to be revised
+    #if args.updater:
+    #    trigger_proc = RunStyle(
+    #        args=(update_event,),
+    #        name="trigger",
+    #        target=trigger,
+    #    )
+    #    trigger_proc.start()
+    #    trigger_proc.join()
     while True:
         try:
             time.sleep(5)

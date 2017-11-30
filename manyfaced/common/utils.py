@@ -2,12 +2,12 @@ import time
 import pickle
 from socket import error as socket_error
 
-from status import CLIENT_TIMEOUT
+from .status import CLIENT_TIMEOUT
 
 
 def dump_file(data):
     try:
-        with file('temp.db') as f:
+        with open('temp.db') as f:
             string_file = f.read()
         db = pickle.loads(string_file)
     except:
@@ -49,4 +49,7 @@ def receive_timeout(the_socket, timeout=CLIENT_TIMEOUT):
             pass
 
     # join all parts to make final string
-    return ''.join(total_data)
+    res = ""
+    for frame in total_data:
+        res += frame.decode()
+    return res

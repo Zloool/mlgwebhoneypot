@@ -2,38 +2,45 @@ import datetime
 import os
 import pickle
 import signal
-from multiprocessing import Process, Lock
-from socket import (socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR,
-                    error as socket_error, inet_aton)
+from base64 import b64encode
+from multiprocessing import Lock, Process
+from threading import Thread, Lock as TLock
+from socket import error as socket_error
+from socket import (AF_INET, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET, inet_aton,
+                    socket)
 
-from faces import faces
-from common.bearstorage import BearStorage
-from common.httphandler import HTTPRequest
-from common.myenc import AESCipher
-from common.settings import HIVEHOST, HIVEPORT, HIVELOGIN, HIVEPASS
-from common.status import BOT_TIMEOUT, UNKNOWN_HTTP, UNKNOWN_NON_HTTP
-from common.utils import dump_file, receive_timeout
+from cryptography.fernet import Fernet
+
+from manyfaced.client.faces import faces
+from manyfaced.common.bearstorage import BearStorage
+from manyfaced.common.httphandler import HTTPRequest
+from manyfaced.common.settings import HIVEHOST, HIVELOGIN, HIVEPASS, HIVEPORT
+from manyfaced.common.status import BOT_TIMEOUT, UNKNOWN_HTTP, UNKNOWN_NON_HTTP
+from manyfaced.common.utils import dump_file, receive_timeout
 
 
-def send_report(data, client, password, lock):
+def send_report(data, lock):
     with lock:
-        cypher = AESCipher(password)
-        message = client + ":"
-        message += cypher.encrypt(pickle.dumps(data))
+        message = compile_report(data)
         s = socket(AF_INET, SOCK_STREAM)
         try:
             s.connect((HIVEHOST, HIVEPORT))
-            s.sendall(message)
-            response = s.recv(1024)
+            s.sendall(message.encode())
+            response = s.recv(1024).decode()
             if response != '200':
-                print response
+                print(response)
                 raise socket_error
             s.close()
         except socket_error:
             dump_file(data)
         except KeyboardInterrupt:
             pass
-    os._exit(0)
+
+def compile_report(data):
+    cypher = Fernet(HIVEPASS)
+    message = HIVELOGIN + ":"
+    message += cypher.encrypt(pickle.dumps(data)).decode()
+    return message
 
 
 def compile_banner(msg_size=0,
@@ -92,10 +99,10 @@ def get_honey_http(request, bot_ip, verbose):
         else:  # If our request doesnt require special treatment, it goes here
             output_data = honey_generic(face)
         if verbose:
-            print bot_ip + " " + request.path + " gotcha!"
+            print(bot_ip + " " + request.path + " gotcha!")
     else:  # If we dont know what to do with that request
         if verbose:
-            print bot_ip + " " + request.path[:50] + " not detected..."
+            print(bot_ip + " " + request.path[:50] + " not detected...")
         output_data = honey_generic(faces['zero'])
         detected = UNKNOWN_HTTP
     return output_data, detected
@@ -104,7 +111,7 @@ def get_honey_http(request, bot_ip, verbose):
 def honey_generic(face):
     root_dir = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(root_dir, 'responses', face)
-    with file(path) as f:
+    with open(path) as f:
         body = f.read()
     output_data = compile_banner(msg_size=len(body))
     output_data += body
@@ -125,7 +132,7 @@ def honey_robots():
 def honey_webdav(bot_ip):
     root_dir = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(root_dir, 'responses', 'webdav.xml')
-    with file(path) as f:
+    with open(path) as f:
         body = f.read()
     output_data = compile_banner(code='HTTP/1.1 207 Multi-Status',
                                  content_type='application/xml; '
@@ -135,7 +142,7 @@ def honey_webdav(bot_ip):
     return output_data
 
 
-def handle_request(message, request_time, bot_ip, args, report_lock):
+def handle_request(message, request_time, bot_ip, args, report_lock, port):
     request = HTTPRequest(message)
     if request.error_code is None:
         if hasattr(request, 'headers'):
@@ -145,11 +152,11 @@ def handle_request(message, request_time, bot_ip, args, report_lock):
                         bot_ip = request.headers['X-Manyfaced-IP']
                         inet_aton(bot_ip)
                     except socket_error:
-                        print "Malformed X-Manyfaced-IP header:" + bot_ip
+                        print("Malformed X-Manyfaced-IP header:" + bot_ip)
                 else:
-                    print "Got X-Manyfaced-IP header but -p option wasn`t set."
+                    print("Got X-Manyfaced-IP header but -p option wasn`t set.")
             elif args.proxy:
-                print "Proxy option was set, but `X-Manyfaced-IP` header not found. Check your proxy. ip:" + bot_ip
+                print("Proxy option was set, but `X-Manyfaced-IP` header not found. Check your proxy. ip:" + bot_ip)
         if hasattr(request, 'path'):
             output_data, detected = get_honey_http(request, bot_ip, args.verbose)
         else:
@@ -157,13 +164,19 @@ def handle_request(message, request_time, bot_ip, args, report_lock):
             detected = UNKNOWN_HTTP
     else:
         if args.verbose:
-            print "Got non-http request"
+            print("Got non-http request")
         detected = UNKNOWN_NON_HTTP
         output_data = message
-    bs = BearStorage(bot_ip, unicode(message, errors='replace'),
-                     request_time, request, detected, HIVELOGIN)
-    Process(
-        args=(bs, HIVELOGIN, HIVEPASS, report_lock),
+    bs = BearStorage(bot_ip, message,
+                     request_time, request, detected, HIVELOGIN, port)
+    if args.debug is not None:
+        run_style = Thread
+        update_event = TLock()
+    else:
+        run_style = Process
+        update_event = Lock()
+    run_style(
+        args=(bs, update_event),
         name="send_report",
         target=send_report,).start()
     return output_data
@@ -176,7 +189,7 @@ def create_server(args, report_lock, update_event):
     server_socket.bind(('', port))
     server_socket.listen(1)
     if args.verbose:
-        print "Serving honey on port %s" % port
+        print("Serving honey on port %s" % port)
     while True:
         if update_event.is_set():
             break
@@ -190,18 +203,18 @@ def create_server(args, report_lock, update_event):
             message = receive_timeout(connection_socket, BOT_TIMEOUT)
         except socket_error:
             if args.verbose:
-                print "Failed to receive data from bot"
+                print("Failed to receive data from bot")
             continue
         bot_ip = bot_socket[0]
         request_time = str(datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f"))
         output_data = handle_request(message, request_time, bot_ip,
-                                     args, report_lock)
+                                     args, report_lock, port)
         try:
-            connection_socket.send(output_data)
+            connection_socket.send(output_data.encode())
             connection_socket.close()
         except socket_error:
             if args.verbose:
-                print "Failed to send response to bot"
+                print("Failed to send response to bot")
             continue
     server_socket.close()
 

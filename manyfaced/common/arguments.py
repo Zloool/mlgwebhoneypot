@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-import settings
+from . import settings
 
 """
 usage: mfh.py [-h] [-c [PORT]] [-s [PORT]] [-u] [-v]
@@ -44,6 +44,13 @@ def parse():
         metavar='PORT',
         nargs='?',
         type=int,
+        )
+
+    parser.add_argument(
+        '-d',
+        action='store_true',
+        dest='debug',
+        help='port to start a SERVER on',
         )
 
     parser.add_argument(
